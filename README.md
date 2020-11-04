@@ -1,0 +1,1 @@
+This extension aims to act as a wrapper for all common re engine functionality - it will be in charge of invalidating and revalidating file paths within re engine archives as necessary, while also ensuring to maintain an invalidation cache and file list for each game (RE2/RE3/DMC5)
