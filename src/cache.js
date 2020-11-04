@@ -3,6 +3,14 @@ const path = require('path');
 const { fs } = require('vortex-api');
 const { INVAL_FILE, CACHE_FILE } = require('./common');
 
+function migrateInvalCache(stagingFolder) {
+  const cacheLocation = path.join(stagingFolder, CACHE_FILE);
+  return fs.removeAsync(cacheLocation)
+    .catch(err => ['ENOENT', 'ENOTFOUND'].includes(err.code)
+      ? Promise.resolve() : Promise.reject(err))
+    .then(() => createInvalCache(cacheLocation));
+}
+
 const emptyObj = {};
 function createInvalCache(cacheFilePath) {
   return fs.writeFileAsync(cacheFilePath, JSON.stringify(emptyObj), { encoding: 'utf8' });
@@ -193,4 +201,5 @@ module.exports = {
   writeInvalEntries,
   findArcKeys,
   hasHash,
+  migrateInvalCache,
 }

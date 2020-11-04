@@ -6,6 +6,7 @@ import { actions, fs, log, selectors, types, util } from 'vortex-api';
 import turbowalk, { IEntry } from 'turbowalk';
 
 import cache from './cache';
+import { CACHE_FILE } from './common';
 import murmur3 from './murmur3';
 import { IArchiveMatch, IDeployment, IREEngineConfig, IREEngineGameSupport } from './types';
 
@@ -238,6 +239,49 @@ function filterOutInvalidated(wildCards, stagingFolder): Bluebird<string[]> {
     });
 }
 
+async function revalidate(context: types.IExtensionContext, gameConfig?: IREEngineConfig) {
+  const store = context.api.store;
+  const state = store.getState();
+  const activeProfile = selectors.activeProfile(state);
+  if (gameConfig === undefined) {
+    gameConfig = RE_ENGINE_GAMES[activeProfile?.gameId];
+    if (gameConfig === undefined) {
+      return Promise.resolve();
+    }
+  }
+
+  const stagingFolder = selectors.installPathForGame(state, activeProfile.gameId);
+  const installedMods = util.getSafe(state, ['persistent', 'mods', activeProfile.gameId], {});
+  const mods = Object.keys(installedMods);
+  let fileEntries: string[] = [];
+  return Bluebird.Promise.each(mods, mod => {
+    const modFolder = path.join(stagingFolder, mod);
+    return turbowalk(modFolder, entries => {
+      const filtered = entries.filter(file => !file.isDirectory)
+                              .map(entry => entry.filePath.replace(modFolder + path.sep, ''));
+      fileEntries = fileEntries.concat(filtered);
+    })
+    .catch(err => ['ENOENT', 'ENOTFOUND'].includes(err.code)
+      ? Promise.resolve() : Promise.reject(err));
+  })
+  .then(() => {
+    const unique = [...new Set(fileEntries)];
+    const wildCards = unique.map(fileEntry => fileEntry.replace(/\\/g, '/'));
+    return revalidateFilePaths(wildCards.map(entry =>
+      murmur3.getMurmur3Hash(entry)), context.api);
+  })
+    .catch(util.UserCanceled, () => context.api.sendNotification({
+      type: 'info',
+      message: 'Re-validation canceled by user',
+      displayMS: 5000,
+    }))
+  .catch(err => null)
+  .finally(() => {
+    store.dispatch(actions.dismissNotification(ACTIVITY_REVAL));
+    return Promise.resolve();
+  });
+}
+
 async function revalidateFilePaths(hashes, api) {
   const state = api.store.getState();
   const gameId = selectors.activeGameId(state);
@@ -460,7 +504,23 @@ function main(context) {
 
     RE_ENGINE_GAMES[gameConfig.gameMode] = gameConfig;
     context.api.ext.qbmsRegisterGame(gameConfig.gameMode);
-  });
+  }, { minArguments: 1 });
+
+  context.registerAPI('migrateReEngineGame', (gameConfig: IREEngineConfig,
+                                              callback: (err: Error) => void) => {
+    // To be used by pre RE Engine wrapper games to migrate away from the old
+    //  invalidation cache to the one managed by the wrapper.
+    //  What we want to do her is revalidate all filepaths in all
+    //  game archives.
+    const state = context.api.store.getState();
+    const staging = selectors.installPathForGame(state, gameConfig.gameMode);
+    revalidate(context, gameConfig)
+      .then(() => {
+        cache.migrateInvalCache(staging);
+        callback(undefined);
+      })
+      .catch(err => callback(err));
+  }, { minArguments: 2 });
 
   context.registerAction('mod-icons', 500, 'savegame', {}, 'Invalidate Paths', () => {
     const store = context.api.store;
@@ -569,44 +629,7 @@ function main(context) {
     });
 
     context.api.events.on('purge-mods', () => {
-      const store = context.api.store;
-      const state = store.getState();
-      const activeProfile = selectors.activeProfile(state);
-      const gameConfig: IREEngineConfig = RE_ENGINE_GAMES[activeProfile?.gameId];
-      if (gameConfig === undefined) {
-        return Promise.resolve();
-      }
-
-      const stagingFolder = selectors.installPathForGame(state, activeProfile.gameId);
-      const installedMods = util.getSafe(state, ['persistent', 'mods', activeProfile.gameId], {});
-      const mods = Object.keys(installedMods);
-      let fileEntries: string[] = [];
-      return Bluebird.Promise.each(mods, mod => {
-        const modFolder = path.join(stagingFolder, mod);
-        return turbowalk(modFolder, entries => {
-          const filtered = entries.filter(file => !file.isDirectory)
-                                  .map(entry => entry.filePath.replace(modFolder + path.sep, ''));
-          fileEntries = fileEntries.concat(filtered);
-        })
-        .catch(err => ['ENOENT', 'ENOTFOUND'].includes(err.code)
-          ? Promise.resolve() : Promise.reject(err));
-      })
-      .then(() => {
-        const unique = [...new Set(fileEntries)];
-        const wildCards = unique.map(fileEntry => fileEntry.replace(/\\/g, '/'));
-        return revalidateFilePaths(wildCards.map(entry =>
-          murmur3.getMurmur3Hash(entry)), context.api);
-      })
-        .catch(util.UserCanceled, () => context.api.sendNotification({
-          type: 'info',
-          message: 'Re-validation canceled by user',
-          displayMS: 5000,
-        }))
-      .catch(err => null)
-      .finally(() => {
-        store.dispatch(actions.dismissNotification(ACTIVITY_REVAL));
-        return Promise.resolve();
-      });
+      revalidate(context);
     });
   });
 }

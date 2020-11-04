@@ -25,7 +25,8 @@ export interface IREEngineConfig {
   //  data to any QBMS error report if needed.
   getErrorAttachments?: (err: Error) => Promise<IAttachmentData[]>;
 
-  // 
+  // Extensions are able to define a predicate to confirm if
+  //  the specified archive is indeed a game archive.
   isGameArchive?: (filePath: string) => Promise<boolean>;
 }
 
