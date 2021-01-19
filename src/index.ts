@@ -111,7 +111,7 @@ async function getGameArchives(api, gameId): Promise<string[]> {
     });
   })
   .catch(err => ['ENOENT', 'ENOTFOUND'].includes(err.code)
-    ? resolve() : reject(err)));
+    ? resolve([]) : reject(err)));
 }
 
 async function findMatchingArchives(files, discoveryPath, api, gameId): Promise<IArchiveMatch[]> {
@@ -330,7 +330,7 @@ async function revalidateFilePaths(hashes, api) {
             qbmsOptions: {},
             callback: (err: Error, data: any) => {
               error = err;
-              return resolve();
+              return resolve(undefined);
             },
           })))
           .then(() => (error === undefined)
@@ -452,7 +452,7 @@ async function invalidateFilePaths(api: types.IExtensionApi,
                 } else {
                   return cache.readNewInvalEntries(path.join(discoveryPath, 'TEMPORARY_FILE'))
                     .then(entries => cache.insertOffsets(stagingFolder, entries, arcKey))
-                    .then(() => resolve());
+                    .then(() => resolve(undefined));
                 }
               },
             };
