@@ -8,7 +8,8 @@ import turbowalk, { IEntry } from 'turbowalk';
 import cache from './cache';
 import { CACHE_FILE } from './common';
 import murmur3 from './murmur3';
-import { IArchiveMatch, IDeployment, IREEngineConfig, IREEngineGameSupport } from './types';
+import { IArchiveMatch, IDeployment, IREEngineConfig,
+  IREEngineGameSupport, REGameRegistrationError } from './types';
 
 const uniApp = app || remote.app;
 
@@ -489,21 +490,54 @@ async function invalidateFilePaths(api: types.IExtensionApi,
     }));
 }
 
+function tryRegistration(func: () => Promise<void>,
+                         delayMS: number = 3000,
+                         triesRemaining: number = 2)  {
+  return new Promise((resolve, reject) => {
+    return func()
+      .then(resolve)
+      .catch(err => setTimeout(() => {
+        if (triesRemaining === 0) {
+          return reject(err);
+        }
+        return tryRegistration(func, delayMS, --triesRemaining)
+          .then(resolve)
+          .catch((err2) => reject(err2));
+      }, delayMS));
+  });
+}
+
 function main(context) {
   context.requireExtension('quickbms-support');
   context.registerInstaller('fluffyquackmanager', 20,
     fluffyManagerTest, fluffyDummyInstaller(context));
 
-  context.registerAPI('addReEngineGame', (gameConfig: IREEngineConfig) => {
-    const state = context.api.store.getState();
+  context.registerAPI('addReEngineGame', (gameConfig: IREEngineConfig, callback?: (err: Error) => void) => {
+    const api = context.api;
+    const state = api.getState();
     const stagingFolder = selectors.installPathForGame(state, gameConfig.gameMode);
     const fileList = path.join(stagingFolder, path.basename(gameConfig.fileListPath));
     fs.statAsync(fileList)
       .then(() => Promise.resolve()) // Backup already present.
       .catch(err => fs.copyAsync(gameConfig.fileListPath, fileList));
 
-    RE_ENGINE_GAMES[gameConfig.gameMode] = gameConfig;
-    context.api.ext.qbmsRegisterGame(gameConfig.gameMode);
+    tryRegistration(() => (api.ext?.qbmsRegisterGame === undefined)
+      ? Promise.reject(new REGameRegistrationError(gameConfig.gameMode, 'qbmsRegisterGame is unavailable'))
+      : Promise.resolve())
+    .then(() => {
+      RE_ENGINE_GAMES[gameConfig.gameMode] = gameConfig;
+      api.ext.qbmsRegisterGame(gameConfig.gameMode);
+      if (callback !== undefined) {
+        callback(undefined);
+      }
+    })
+    .catch(err => {
+      if (callback !== undefined) {
+        callback(err);
+      } else {
+        context.api.showErrorNotification('Re-Engine game registration failed', err);
+      }
+    });
   }, { minArguments: 1 });
 
   context.registerAPI('migrateReEngineGame', (gameConfig: IREEngineConfig,

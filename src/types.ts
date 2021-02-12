@@ -1,5 +1,11 @@
 import { types } from 'vortex-api';
 
+export class REGameRegistrationError extends Error {
+  constructor(gameMode: string, message: string) {
+    super(`RE-Engine-Wrapper Failed to register ${gameMode}: ${message}`);
+  }
+}
+
 export interface IREEngineConfig {
   // The Nexus Mods domain name for this game.
   gameMode: string;
