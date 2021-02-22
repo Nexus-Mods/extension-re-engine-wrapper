@@ -309,6 +309,8 @@ async function revalidateFilePaths(hashes, api) {
         id: ACTIVITY_REVAL,
         type: 'activity',
         message: 'Revalidating mods',
+        noDismiss: true,
+        allowSuppress: false,
       });
       return Bluebird.Promise.each(keys, async key => {
         if (arcMap[key].length === 0) {
@@ -412,6 +414,8 @@ async function invalidateFilePaths(api: types.IExtensionApi,
     id: ACTIVITY_INVAL,
     type: 'activity',
     message: 'Invalidating game filepaths',
+    noDismiss: true,
+    allowSuppress: false,
   });
 
   return filterPromise.then(filtered => addToFileList(state, gameMode, filtered)
