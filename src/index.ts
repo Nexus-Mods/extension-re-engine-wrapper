@@ -8,8 +8,8 @@ import turbowalk, { IEntry } from 'turbowalk';
 import cache from './cache';
 import { CACHE_FILE } from './common';
 import murmur3 from './murmur3';
-import { IArchiveMatch, IDeployment, IREEngineConfig,
-  IREEngineGameSupport, REGameRegistrationError } from './types';
+import { IArchiveMatch, IAttachmentData, IREEngineConfig, IREEngineGameSupport,
+  REGameRegistrationError, ValidationError } from './types';
 
 const uniApp = app || remote.app;
 
@@ -42,6 +42,94 @@ async function getFileList(state: types.IState, gameMode: string): Promise<strin
   return ensureListBackup(state, gameMode)
     .then(backupFilePath => fs.readFileAsync(backupFilePath, { encoding: 'utf-8' }))
     .then(data => Promise.resolve(data.split('\n')));
+}
+
+async function validationErrorHandler(api: types.IExtensionApi,
+                                      forcedOperation: boolean,
+                                      gameConfig: IREEngineConfig,
+                                      err: any): Promise<void> {
+  const state = api.getState();
+  const reportIncompleteList = () => {
+    if ((err as ValidationError).validationType !== 'invalidation') {
+      return Promise.resolve();
+    }
+    const notifId = 're_engine_missing_files';
+    const notifications = util.getSafe(state, ['session', 'notifications', 'notifications'], []);
+    if (notifications.find(notif => notif.id === notifId) === undefined) {
+      api.showErrorNotification('Missing filepaths in game archives',
+      'Unfortunately Vortex cannot install this mod correctly as it seems to include one or more '
+      + 'unrecognized files.<br/><br/>'
+      + 'This can happen when:<br/>'
+      + '1. Your game archives do not include the files required for this mod to work (Possibly missing DLC)<br/>'
+      + '2. The mod author has packed his mod incorrectly and has included non-mod files such as readmes, screenshots, etc. '
+      + '(In which case you don\'t have to worry - the mod should still work) <br/><br/>'
+      + 'To report this issue, please use the feedback system and make sure you attach Vortex\'s latest log file '
+      + 'so we can review the missing files',
+      { isBBCode: true, allowReport: false });
+    }
+
+    return Promise.resolve();
+  };
+
+  if (err instanceof util.ProcessCanceled
+    || err.message.includes('All entries invalidated')) {
+    return Promise.resolve();
+  }
+
+  if (err instanceof ValidationError) {
+    (forcedOperation) ? Promise.resolve() : reportIncompleteList();
+  }
+
+  if (err instanceof util.UserCanceled) {
+    api.sendNotification({
+      type: 'info',
+      message: 'Operation canceled by user',
+      displayMS: 5000,
+    });
+    return Promise.resolve();
+  }
+
+  const mods = util.getSafe(state, ['persistent', 'mods', gameConfig.gameMode], {});
+  const modKeys = Object.keys(mods);
+  const gameFileAttachments: IAttachmentData[] = (!!gameConfig.getErrorAttachments)
+    ? await gameConfig.getErrorAttachments(err)
+    : [];
+  const attachments: types.IAttachment[] = [
+    {
+      id: 'installedMods',
+      type: 'data',
+      data: modKeys.join(', ') || 'None',
+      description: 'List of installed mods',
+    },
+  ];
+
+  const stagingFolder = selectors.installPathForGame(state, gameConfig.gameMode);
+  const qbmsLog: IAttachmentData = {
+    filePath: path.join(uniApp.getPath('userData'), 'quickbms.log'),
+    description: 'QuickBMS log file',
+  };
+  const cacheFile: IAttachmentData = {
+    filePath: path.join(stagingFolder, CACHE_FILE),
+    description: 'Invalidation cache file',
+  };
+
+  const fileAttachments: IAttachmentData[] = gameFileAttachments.concat(qbmsLog, cacheFile);
+  for (const file of fileAttachments) {
+    try {
+      await fs.statAsync(file.filePath);
+      attachments.push({
+        id: path.basename(file.filePath),
+        type: 'file',
+        data: file.filePath,
+        description: file.description,
+      });
+    } catch (err) {
+      // nop
+    }
+  }
+
+  err['attachLogOnReport'] = true;
+  api.showErrorNotification('Validation operation failed', err, { attachments });
 }
 
 function testArchive(files, operationPath, archivePath, api, gameId): Promise<string[]> {
@@ -271,12 +359,7 @@ async function revalidate(context: types.IExtensionContext, gameConfig?: IREEngi
     return revalidateFilePaths(wildCards.map(entry =>
       murmur3.getMurmur3Hash(entry)), context.api);
   })
-    .catch(util.UserCanceled, () => context.api.sendNotification({
-      type: 'info',
-      message: 'Re-validation canceled by user',
-      displayMS: 5000,
-    }))
-  .catch(err => null)
+  .catch(err => validationErrorHandler(context.api, false, gameConfig, err))
   .finally(() => {
     store.dispatch(actions.dismissNotification(ACTIVITY_REVAL));
     return Promise.resolve();
@@ -371,7 +454,6 @@ async function invalidateFilePaths(api: types.IExtensionApi,
                                    wildCards: string[],
                                    gameMode: string,
                                    force: boolean = false) {
-  const notifId = 're_engine_missing_files';
   const state: types.IState = api.store.getState();
   const gameConfig: IREEngineConfig = RE_ENGINE_GAMES[gameMode];
   if (gameConfig === undefined) {
@@ -379,24 +461,6 @@ async function invalidateFilePaths(api: types.IExtensionApi,
     log('error', '[RE-Wrapper] no game config for game', gameMode);
     return Promise.reject(new util.ProcessCanceled('game does not support invalidation'));
   }
-
-  const reportIncompleteList = () => {
-    const notifications = util.getSafe(state, ['session', 'notifications', 'notifications'], []);
-    if (notifications.find(notif => notif.id === notifId) === undefined) {
-      api.showErrorNotification('Missing filepaths in game archives',
-      'Unfortunately Vortex cannot install this mod correctly as it seems to include one or more '
-      + 'unrecognized files.<br/><br/>'
-      + 'This can happen when:<br/>'
-      + '1. Your game archives do not include the files required for this mod to work (Possibly missing DLC)<br/>'
-      + '2. The mod author has packed his mod incorrectly and has included non-mod files such as readmes, screenshots, etc. '
-      + '(In which case you don\'t have to worry - the mod should still work) <br/><br/>'
-      + 'To report this issue, please use the feedback system and make sure you attach Vortex\'s latest log file '
-      + 'so we can review the missing files',
-      { isBBCode: true, allowReport: false });
-    }
-
-    return Promise.resolve();
-  };
 
   // For the invalidation logic to work correctly all
   //  wildCards MUST belong to the same game archive/mod.
@@ -432,7 +496,12 @@ async function invalidateFilePaths(api: types.IExtensionApi,
           ? 'warn' : 'error', 'Missing filepaths in game archive', filtered.join('\n'));
         return (invalidationsExist)
           ? Promise.resolve()
-          : Promise.reject(new util.NotFound('Failed to match mod files to game archives'));
+          : Promise.reject(new ValidationError({
+            message: 'Failed to match mod files to game archives',
+            filePaths: filtered,
+            gameMode,
+            validationType: 'invalidation',
+          }));
       }
 
       return copyToTemp(gameConfig.bmsScriptPaths.invalidation)
@@ -464,27 +533,7 @@ async function invalidateFilePaths(api: types.IExtensionApi,
             api.ext.qbmsWrite(qbmsOpProps);
           }));
       })))
-      .catch(err => {
-        if (err instanceof util.ProcessCanceled
-         || err.message.includes('All entries invalidated')) {
-          return Promise.resolve();
-        }
-
-        if (err instanceof util.NotFound) {
-          return (force) ? Promise.resolve() : reportIncompleteList();
-        }
-
-        if (err instanceof util.UserCanceled) {
-          api.sendNotification({
-            type: 'info',
-            message: 'Invalidation canceled by user',
-            displayMS: 5000,
-          });
-          return Promise.resolve();
-        }
-
-        api.showErrorNotification('invalidation failed', err);
-      })
+      .catch(err => validationErrorHandler(api, force, gameConfig, err))
       .finally(() => {
         api.store.dispatch(actions.dismissNotification(ACTIVITY_INVAL));
         return removeFromTemp(path.join(QBMS_TEMP_PATH,
@@ -596,16 +645,25 @@ function main(context) {
           { replace: { modDir: modFolder }, allowReport: false });
           return Promise.resolve();
         } else {
-          context.api.showErrorNotification('invalidation failed', err);
+          validationErrorHandler(context.api, true, gameConfig, err);
         }
       });
       const relFilePaths = entries.map(entry => entry.filePath.replace(modFolder + path.sep, ''));
       const wildCards = relFilePaths.map(fileEntry => fileEntry.replace(/\\/g, '/'));
       return invalidateFilePaths(context.api, wildCards, gameMode, true)
         .then(() => store.dispatch(actions.setDeploymentNecessary(gameMode, true)))
-        .catch(err => (err instanceof util.ProcessCanceled)
-          ? Promise.resolve()
-          : Promise.reject(err));
+        .catch(err => {
+          if (err instanceof util.ProcessCanceled) {
+            return Promise.resolve();
+          }
+          validationErrorHandler(context.api, true, gameConfig, err);
+        })
+        .finally(() => {
+          context.api.store.dispatch(actions.dismissNotification(ACTIVITY_INVAL));
+          return removeFromTemp(path.join(QBMS_TEMP_PATH,
+            path.basename(gameConfig.bmsScriptPaths.invalidation)))
+            .then(() => removeFilteredList());
+        });
     }));
   }, () => {
     const state = context.api.store.getState();
@@ -657,7 +715,7 @@ function main(context) {
             if (err instanceof util.ProcessCanceled) {
               return Promise.resolve();
             }
-            context.api.showErrorNotification('invalidation failed', err);
+            context.api.showErrorNotification('Invalidation failed', err);
           });
       })
       .finally(() => {

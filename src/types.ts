@@ -1,5 +1,46 @@
 import { types } from 'vortex-api';
 
+export type ValidationType = 'invalidation' | 'revalidation';
+export interface IValidationErrorInfo {
+  gameMode: string;
+  message: string;
+  filePaths: string[];
+  validationType: ValidationType;
+}
+
+export class ValidationError extends Error {
+  private mAffectedGame: string;
+  private mValidationType: ValidationType;
+  private mFilePaths: string;
+  constructor(validationError: IValidationErrorInfo) {
+    super(`Failed ${validationError.validationType}: ${validationError.message}`);
+    this.mValidationType = validationError.validationType;
+    this.mAffectedGame = validationError.gameMode;
+    const isTruncated: boolean = (validationError.filePaths.length > 40);
+    const filePaths: string[] = (isTruncated)
+      ? validationError.filePaths.slice(validationError.filePaths.length - 40)
+      : validationError.filePaths;
+
+    if (isTruncated) {
+      filePaths.push('truncated...');
+    }
+
+    this.mFilePaths = filePaths.join('\n');
+  }
+
+  public get validationType(): ValidationType {
+    return this.mValidationType;
+  }
+
+  public get filePaths(): string {
+    return this.mFilePaths;
+  }
+
+  public get affectedGame(): string {
+    return this.mAffectedGame;
+  }
+}
+
 export class REGameRegistrationError extends Error {
   constructor(gameMode: string, message: string) {
     super(`RE-Engine-Wrapper Failed to register ${gameMode}: ${message}`);
