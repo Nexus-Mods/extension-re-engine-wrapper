@@ -331,16 +331,16 @@ function filterOutInvalidated(wildCards, stagingFolder): Bluebird<string[]> {
 async function revalidate(context: types.IExtensionContext, gameConfig?: IREEngineConfig) {
   const store = context.api.store;
   const state = store.getState();
-  const activeProfile = selectors.activeProfile(state);
   if (gameConfig === undefined) {
+    const activeProfile = selectors.activeProfile(state);
     gameConfig = RE_ENGINE_GAMES[activeProfile?.gameId];
     if (gameConfig === undefined) {
       return Promise.resolve();
     }
   }
 
-  const stagingFolder = selectors.installPathForGame(state, activeProfile.gameId);
-  const installedMods = util.getSafe(state, ['persistent', 'mods', activeProfile.gameId], {});
+  const stagingFolder = selectors.installPathForGame(state, gameConfig.gameMode);
+  const installedMods = util.getSafe(state, ['persistent', 'mods', gameConfig.gameMode], {});
   const mods = Object.keys(installedMods);
   let fileEntries: string[] = [];
   return Bluebird.Promise.each(mods, mod => {
@@ -560,52 +560,74 @@ function tryRegistration(func: () => Promise<void>,
   });
 }
 
+function addReEngineGame(context: types.IExtensionContext,
+                         gameConfig: IREEngineConfig,
+                         callback?: (err: Error) => void) {
+  const api = context.api;
+  const state = api.getState();
+  const stagingFolder = selectors.installPathForGame(state, gameConfig.gameMode);
+  const fileList = path.join(stagingFolder, path.basename(gameConfig.fileListPath));
+  fs.statAsync(fileList)
+    .then(() => Promise.resolve()) // Backup already present.
+    .catch(err => fs.copyAsync(gameConfig.fileListPath, fileList));
+
+  return tryRegistration(() => (api.ext?.qbmsRegisterGame === undefined)
+    ? Promise.reject(new REGameRegistrationError(gameConfig.gameMode, 'qbmsRegisterGame is unavailable'))
+    : Promise.resolve())
+  .then(() => {
+    if (RE_ENGINE_GAMES[gameConfig.gameMode] !== undefined) {
+      return Promise.resolve();
+    }
+    RE_ENGINE_GAMES[gameConfig.gameMode] = gameConfig;
+    api.ext.qbmsRegisterGame(gameConfig.gameMode);
+    if (callback !== undefined) {
+      callback(undefined);
+    }
+
+    return Promise.resolve();
+  })
+  .catch(err => {
+    if (callback !== undefined) {
+      callback(err);
+    } else {
+      context.api.showErrorNotification('Re-Engine game registration failed', err);
+    }
+  });
+}
+
 function main(context) {
   context.requireExtension('quickbms-support');
   context.registerInstaller('fluffyquackmanager', 20,
     fluffyManagerTest, fluffyDummyInstaller(context));
 
-  context.registerAPI('addReEngineGame', (gameConfig: IREEngineConfig, callback?: (err: Error) => void) => {
-    const api = context.api;
-    const state = api.getState();
-    const stagingFolder = selectors.installPathForGame(state, gameConfig.gameMode);
-    const fileList = path.join(stagingFolder, path.basename(gameConfig.fileListPath));
-    fs.statAsync(fileList)
-      .then(() => Promise.resolve()) // Backup already present.
-      .catch(err => fs.copyAsync(gameConfig.fileListPath, fileList));
-
-    tryRegistration(() => (api.ext?.qbmsRegisterGame === undefined)
-      ? Promise.reject(new REGameRegistrationError(gameConfig.gameMode, 'qbmsRegisterGame is unavailable'))
-      : Promise.resolve())
-    .then(() => {
-      RE_ENGINE_GAMES[gameConfig.gameMode] = gameConfig;
-      api.ext.qbmsRegisterGame(gameConfig.gameMode);
-      if (callback !== undefined) {
-        callback(undefined);
-      }
-    })
-    .catch(err => {
-      if (callback !== undefined) {
-        callback(err);
-      } else {
-        context.api.showErrorNotification('Re-Engine game registration failed', err);
-      }
-    });
+  context.registerAPI('addReEngineGame',
+    (gameConfig: IREEngineConfig, callback?: (err: Error) => void) => {
+      addReEngineGame(context, gameConfig, callback);
   }, { minArguments: 1 });
 
   context.registerAPI('migrateReEngineGame', (gameConfig: IREEngineConfig,
                                               callback: (err: Error) => void) => {
     // To be used by pre RE Engine wrapper games to migrate away from the old
     //  invalidation cache to the one managed by the wrapper.
-    //  What we want to do her is revalidate all filepaths in all
+    //  What we want to do here is revalidate all filepaths in all
     //  game archives.
-    const state = context.api.store.getState();
+    const state = context.api.getState();
     const staging = selectors.installPathForGame(state, gameConfig.gameMode);
-    revalidate(context, gameConfig)
+
+    context.api.awaitUI()
+      .then(() => addReEngineGame(context, gameConfig, callback))
+      .then(() => revalidate(context, gameConfig))
       .then(() => {
         cache.migrateInvalCache(staging);
         callback(undefined);
       })
+      .then(() => {
+        const modTypes: { [typeId: string]: string } =
+          selectors.modPathsForGame(state, gameConfig.gameMode);
+        return context.api.emitAndAwait('purge-mods-in-path',
+          gameConfig.gameMode, '', modTypes['']);
+      })
+      .then(() => context.api.store.dispatch(actions.setDeploymentNecessary(gameConfig.gameMode, true)))
       .catch(err => callback(err));
   }, { minArguments: 2 });
 
