@@ -71,8 +71,7 @@ async function validationErrorHandler(api: types.IExtensionApi,
     return Promise.resolve();
   };
 
-  if (err instanceof util.ProcessCanceled
-    || err.message.includes('All entries invalidated')) {
+  if (err instanceof util.ProcessCanceled) {
     return Promise.resolve();
   }
 
@@ -322,9 +321,11 @@ function filterOutInvalidated(wildCards, stagingFolder): Bluebird<string[]> {
         return accumulator;
       }, []);
 
-      return filtered.length > 0
-        ? Bluebird.Promise.resolve(filtered)
-        : Bluebird.Promise.reject(new Error('All entries invalidated'));
+      if (filtered.length === 0) {
+        log('debug', 'all entries have already been invalidated');
+      }
+
+      return Bluebird.Promise.resolve(filtered);
     });
 }
 
