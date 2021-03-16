@@ -463,8 +463,6 @@ async function invalidateFilePaths(api: types.IExtensionApi,
     return Promise.reject(new util.ProcessCanceled('game does not support invalidation'));
   }
 
-  // For the invalidation logic to work correctly all
-  //  wildCards MUST belong to the same game archive/mod.
   const discoveryPath = getDiscoveryPath(api, gameMode);
   if (discoveryPath === undefined) {
     return Promise.reject(new Error('Game is not discovered'));
@@ -474,14 +472,6 @@ async function invalidateFilePaths(api: types.IExtensionApi,
   const filterPromise = (force)
     ? Bluebird.Promise.resolve(wildCards)
     : filterOutInvalidated(wildCards, stagingFolder);
-
-  api.sendNotification({
-    id: ACTIVITY_INVAL,
-    type: 'activity',
-    message: 'Invalidating game filepaths',
-    noDismiss: true,
-    allowSuppress: false,
-  });
 
   return filterPromise.then(filtered => addToFileList(state, gameMode, filtered)
     .then(() => findMatchingArchives(filtered, discoveryPath, api, gameMode))
@@ -505,6 +495,14 @@ async function invalidateFilePaths(api: types.IExtensionApi,
           }));
       }
 
+      api.sendNotification({
+        id: ACTIVITY_INVAL,
+        type: 'activity',
+        message: 'Invalidating game filepaths',
+        noDismiss: true,
+        allowSuppress: false,
+      });
+
       return copyToTemp(gameConfig.bmsScriptPaths.invalidation)
         .then(() => Promise.all(archives.map(arcMatch => {
           const arcKey = path.basename(arcMatch.archivePath, '.pak');
@@ -527,7 +525,8 @@ async function invalidateFilePaths(api: types.IExtensionApi,
                 } else {
                   return cache.readNewInvalEntries(path.join(discoveryPath, 'TEMPORARY_FILE'))
                     .then(entries => cache.insertOffsets(stagingFolder, entries, arcKey))
-                    .then(() => resolve(undefined));
+                    .then(() => resolve(undefined))
+                    .catch(err2 => reject(err2));
                 }
               },
             };
@@ -541,7 +540,8 @@ async function invalidateFilePaths(api: types.IExtensionApi,
           path.basename(gameConfig.bmsScriptPaths.invalidation)))
           .then(() => removeFilteredList());
       });
-    }));
+    }))
+    .catch(err => validationErrorHandler(api, force, gameConfig, err));
 }
 
 function tryRegistration(func: () => Promise<void>,
@@ -628,6 +628,7 @@ function main(context) {
         return context.api.emitAndAwait('purge-mods-in-path',
           gameConfig.gameMode, '', modTypes['']);
       })
+      // tslint:disable-next-line: max-line-length
       .then(() => context.api.store.dispatch(actions.setDeploymentNecessary(gameConfig.gameMode, true)))
       .catch(err => callback(err));
   }, { minArguments: 2 });
