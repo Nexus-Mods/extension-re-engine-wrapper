@@ -246,9 +246,9 @@ function fluffyManagerTest(files: string[], gameId: string) {
 
 function fluffyDummyInstaller(context: types.IExtensionContext) {
   context.api.showErrorNotification('Invalid Mod', 'It looks like you tried to install '
-  + 'Fluffy Manager 5000, which is a standalone mod manager and not a mod for Resident Evil 2.\n\n'
+  + 'Fluffy Manager 5000, which is a standalone mod manager and not a mod.\n\n'
   + 'Fluffy Manager and Vortex cannot be used together and doing so will break your game. Please '
-  + 'use only one of these apps to manage mods for Resident Evil 2.', { allowReport: false });
+  + 'use only one of these apps to manage mods for RE Engine Games.', { allowReport: false });
   return Bluebird.Promise.reject(new util.ProcessCanceled('Invalid mod'));
 }
 
