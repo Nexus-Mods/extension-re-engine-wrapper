@@ -236,22 +236,20 @@ function getDiscoveryPath(api, gameId) {
 }
 
 const FLUFFY_FILES = ['fmodex64.dll', 'Modmanager.exe'];
-function fluffyManagerTest(files, gameId) {
+function fluffyManagerTest(files: string[], gameId: string) {
   const matcher = (file => FLUFFY_FILES.includes(file));
   const supported = ((RE_ENGINE_GAMES[gameId] !== undefined)
                  && (files.filter(matcher).length > 0));
 
-  return Promise.resolve({ supported, requiredFiles: FLUFFY_FILES });
+  return Bluebird.Promise.resolve({ supported, requiredFiles: FLUFFY_FILES });
 }
 
-function fluffyDummyInstaller(context) {
-  return async (files: string[]) => {
-    context.api.showErrorNotification('Invalid Mod', 'It looks like you tried to install '
-    + 'Fluffy Manager 5000, which is a standalone mod manager and not a mod for Resident Evil 2.\n\n'
-    + 'Fluffy Manager and Vortex cannot be used together and doing so will break your game. Please '
-    + 'use only one of these apps to manage mods for Resident Evil 2.', { allowReport: false });
-    return Promise.reject(new util.ProcessCanceled('Invalid mod'));
-  };
+function fluffyDummyInstaller(context: types.IExtensionContext) {
+  context.api.showErrorNotification('Invalid Mod', 'It looks like you tried to install '
+  + 'Fluffy Manager 5000, which is a standalone mod manager and not a mod for Resident Evil 2.\n\n'
+  + 'Fluffy Manager and Vortex cannot be used together and doing so will break your game. Please '
+  + 'use only one of these apps to manage mods for Resident Evil 2.', { allowReport: false });
+  return Bluebird.Promise.reject(new util.ProcessCanceled('Invalid mod'));
 }
 
 function copyToTemp(filePath) {
@@ -596,10 +594,16 @@ function addReEngineGame(context: types.IExtensionContext,
   });
 }
 
-function main(context) {
+function main(context: types.IExtensionContext) {
+  const isReEngineGame = () => {
+    const state = context.api.getState();
+    const gameMode = selectors.activeGameId(state);
+    return (RE_ENGINE_GAMES[gameMode] !== undefined);
+  };
+
   context.requireExtension('quickbms-support');
   context.registerInstaller('fluffyquackmanager', 20,
-    fluffyManagerTest, fluffyDummyInstaller(context));
+    fluffyManagerTest, () => fluffyDummyInstaller(context));
 
   context.registerAPI('addReEngineGame',
     (gameConfig: IREEngineConfig, callback?: (err: Error) => void) => {
@@ -633,6 +637,30 @@ function main(context) {
       .catch(err => callback(err));
   }, { minArguments: 2 });
 
+  context.registerAction('mod-icons', 500, 'savegame', {}, 'Reset Invalidation Cache', () => {
+    const state = context.api.getState();
+    const activeGameId = selectors.activeGameId(state);
+    const stagingFolder = selectors.installPathForGame(state, activeGameId);
+    const removeCache = () => fs.removeAsync(path.join(stagingFolder, CACHE_FILE))
+      .catch(err => err.code !== 'ENOENT'
+        ? context.api.showErrorNotification('Failed to reset cache', err)
+        : Promise.resolve());
+
+    const t = context.api.translate;
+    context.api.showDialog('question', 'Reset Invalidation Cache', {
+      bbcode: t('Please only use this functionality as a last resort - Vortex uses the '
+              + 'invalidation cache to keep track of deployed modified files and restore '
+              + 'vanilla files when purging your mods. Resetting the cache will cause Vortex '
+              + 'to lose track of deployed mods, potentially leaving your game in a broken state.[br][/br][br][/br]'
+              + 'Only use this button if you intend to verify file integrity through Steam.'),
+    }, [
+      { label: 'Close', default: true },
+      { label: 'View Cache', action: () => util.opn(path.join(stagingFolder, CACHE_FILE))
+                                               .catch(err => null) },
+      { label: 'Reset Cache', action: () => removeCache() },
+    ]);
+  }, isReEngineGame);
+
   context.registerAction('mod-icons', 500, 'savegame', {}, 'Invalidate Paths', () => {
     const store = context.api.store;
     const state = store.getState();
@@ -654,7 +682,7 @@ function main(context) {
       }
       return accum;
     }, []);
-    return Promise.all(enabled.map(async mod => {
+    Promise.all(enabled.map(async mod => {
       const modFolder = path.join(stagingFolder, mod);
       let entries: IEntry[] = [];
       await turbowalk(modFolder, fileEntries => {
@@ -688,12 +716,9 @@ function main(context) {
             path.basename(gameConfig.bmsScriptPaths.invalidation)))
             .then(() => removeFilteredList());
         });
-    }));
-  }, () => {
-    const state = context.api.store.getState();
-    const gameMode = selectors.activeGameId(state);
-    return (RE_ENGINE_GAMES[gameMode] !== undefined);
-  });
+    }))
+    .catch(err => validationErrorHandler(context.api, true, gameConfig, err));
+  }, isReEngineGame);
 
   let profileChanging: boolean = false;
   context.once(() => {
