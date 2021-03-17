@@ -399,31 +399,56 @@ async function revalidateFilePaths(hashes, api) {
           return Promise.resolve();
         }
 
-        const gameArchives = await getGameArchives(api, gameId);
-        const archivePath = gameArchives.find(arc => path.basename(arc, '.pak') === key);
-        if (archivePath === undefined) {
-          return Promise.reject(new Error(`missing game archive - ${key}`));
-        }
+      const legacyPaths = gameConfig.legacyArcNames
+        ? Object.keys(gameConfig.legacyArcNames).map(arc => ({
+            legacyKey: arc,
+            key: gameConfig.legacyArcNames[arc],
+            archivePath: path.join(discoveryPath, gameConfig.legacyArcNames[arc])
+          }))
+        : undefined;
 
-        return cache.getInvalEntries(stagingFolder, arcMap[key], key)
-          .then(entries => cache.writeInvalEntries(discoveryPath, entries))
-          .then(() => new Promise((resolve, reject) => api.ext.qbmsWrite({
-            gameMode: gameId,
-            archivePath,
-            bmsScriptPath: gameConfig.bmsScriptPaths.revalidation,
-            operationPath: discoveryPath,
-            qbmsOptions: {},
-            callback: (err: Error, data: any) => {
-              error = err;
-              return resolve(undefined);
-            },
-          })))
-          .then(() => (error === undefined)
-            ? Promise.resolve()
-            : (error instanceof util.ProcessCanceled)
-              ? Promise.reject(error)
-              : Promise.reject(new Error('Failed to re-validate filepaths')))
-          .then(() => cache.removeOffsets(stagingFolder, arcMap[key], key));
+      const getLegacyKeyPath = () => {
+        if (legacyPaths === undefined) {
+          return undefined;
+        }
+        return legacyPaths.find(leg => (leg.legacyKey === key))?.archivePath;
+      }
+
+      const gameArchives = await getGameArchives(api, gameId);
+      const getKeyPath = () => {
+        if (legacyPaths === undefined) {
+          return gameArchives.find(arc => path.basename(arc, '.pak') === key);
+        } else {
+          const segments = key.split(path.sep).filter(seg => !!seg);
+          return (segments.length > 1)
+            ? legacyPaths.find(arc => arc.key === key)?.archivePath
+            : gameArchives.find(arc => path.basename(arc, '.pak') === key);
+        }
+      }
+      const archivePath = getLegacyKeyPath() || getKeyPath();
+      if (archivePath === undefined) {
+        return Promise.reject(new Error(`missing game archive - ${key}`));
+      }
+
+      return cache.getInvalEntries(stagingFolder, arcMap[key], key)
+        .then(entries => cache.writeInvalEntries(discoveryPath, entries))
+        .then(() => new Promise((resolve, reject) => api.ext.qbmsWrite({
+          gameMode: gameId,
+          archivePath,
+          bmsScriptPath: gameConfig.bmsScriptPaths.revalidation,
+          operationPath: discoveryPath,
+          qbmsOptions: {},
+          callback: (err: Error, data: any) => {
+            error = err;
+            return resolve(undefined);
+          },
+        })))
+        .then(() => (error === undefined)
+          ? Promise.resolve()
+          : (error instanceof util.ProcessCanceled)
+            ? Promise.reject(error)
+            : Promise.reject(new Error('Failed to re-validate filepaths')))
+        .then(() => cache.removeOffsets(stagingFolder, arcMap[key], key));
       });
     });
 }
@@ -471,6 +496,15 @@ async function invalidateFilePaths(api: types.IExtensionApi,
     ? Bluebird.Promise.resolve(wildCards)
     : filterOutInvalidated(wildCards, stagingFolder);
 
+  api.sendNotification({
+    id: ACTIVITY_INVAL,
+    type: 'activity',
+    message: 'Invalidating game filepaths - this can take a while - don\'t run the game!',
+    noDismiss: true,
+    allowSuppress: false,
+    progress: 0,
+  });
+
   return filterPromise.then(filtered => addToFileList(state, gameMode, filtered)
     .then(() => findMatchingArchives(filtered, discoveryPath, api, gameMode))
     .then((archives: IArchiveMatch[]) => {
@@ -493,17 +527,38 @@ async function invalidateFilePaths(api: types.IExtensionApi,
           }));
       }
 
+      // We could calculate progress per file, but that will just make a slow
+      //  process even slower, which is why we're just going to hard code
+      //  progress value.
       api.sendNotification({
         id: ACTIVITY_INVAL,
         type: 'activity',
-        message: 'Invalidating game filepaths',
+        message: 'Invalidating game filepaths - almost there!',
         noDismiss: true,
         allowSuppress: false,
+        progress: 60,
       });
+
+      const legacyPaths = (gameConfig.legacyArcNames !== undefined)
+        ? Object.keys(gameConfig.legacyArcNames).map(arc => ({
+            key: gameConfig.legacyArcNames[arc].replace('.pak', ''),
+            archivePath: path.join(discoveryPath, gameConfig.legacyArcNames[arc])
+          }))
+        : undefined;
+
+      const getLegacyKey = (filePath: string, fallback: string) => {
+        if (legacyPaths === undefined) {
+          return fallback;
+        }
+        const legPath = legacyPaths.find(leg =>
+          (leg.archivePath.toLowerCase() === filePath.toLowerCase()));
+        return legPath?.key || fallback;
+      }
 
       return copyToTemp(gameConfig.bmsScriptPaths.invalidation)
         .then(() => Promise.all(archives.map(arcMatch => {
-          const arcKey = path.basename(arcMatch.archivePath, '.pak');
+          const fallbackArcKey = path.basename(arcMatch.archivePath, '.pak');
+          const arcKey = getLegacyKey(arcMatch.archivePath, fallbackArcKey);
           const data = arcMatch.matchedFiles;
           const qbmsOptions = {
             keepTemporaryFiles: true,
@@ -533,13 +588,13 @@ async function invalidateFilePaths(api: types.IExtensionApi,
       })))
       .catch(err => validationErrorHandler(api, force, gameConfig, err))
       .finally(() => {
-        api.store.dispatch(actions.dismissNotification(ACTIVITY_INVAL));
         return removeFromTemp(path.join(QBMS_TEMP_PATH,
           path.basename(gameConfig.bmsScriptPaths.invalidation)))
           .then(() => removeFilteredList());
       });
     }))
-    .catch(err => validationErrorHandler(api, force, gameConfig, err));
+    .catch(err => validationErrorHandler(api, force, gameConfig, err))
+    .finally(() => api.store.dispatch(actions.dismissNotification(ACTIVITY_INVAL)))
 }
 
 function tryRegistration(func: () => Promise<void>,
@@ -725,9 +780,15 @@ function main(context: types.IExtensionContext) {
     context.api.events.on('profile-will-change', (newProfileId) => {
       profileChanging = true;
     });
+
     context.api.events.on('profile-did-change', (newProfileId) => {
       profileChanging = false;
     });
+
+    context.api.onAsync('will-deploy', () => {
+      return revalidate(context);
+    });
+
     context.api.events.on('did-deploy', () => {
       const store = context.api.store;
       const state = store.getState();

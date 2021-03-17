@@ -61,7 +61,13 @@ export interface IREEngineConfig {
 
   fileListPath: string;
 
-  // Abs path to the game's cache file
+  // Used during re-engine-wrapper cache migration.
+  //  Do not use this for any other games besides RE2 and DMC5
+  legacyArcNames?: { [arcKey: string]: string };
+
+  // Abs path to the game's cache file if a custom location
+  //  is needed. By default the cache's path is inside the staging
+  //  folder.
   cachePath?: string;
 
   // Game extensions are able to provide file paths to the
