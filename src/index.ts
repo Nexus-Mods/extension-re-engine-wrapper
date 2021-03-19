@@ -421,7 +421,7 @@ async function revalidateFilePaths(hashes, api) {
         } else {
           const segments = key.split(path.sep).filter(seg => !!seg);
           return (segments.length > 1)
-            ? legacyPaths.find(arc => arc.key === key)?.archivePath
+            ? legacyPaths.find(arc => arc.key === (key + '.pak'))?.archivePath
             : gameArchives.find(arc => path.basename(arc, '.pak') === key);
         }
       }
