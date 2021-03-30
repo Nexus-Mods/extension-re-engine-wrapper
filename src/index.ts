@@ -235,13 +235,13 @@ function getDiscoveryPath(api, gameId) {
   return discovery.path;
 }
 
-const FLUFFY_FILES = ['fmodex64.dll', 'Modmanager.exe'];
+const FLUFFY_FILES = ['Modmanager.exe'].map(file => file.toLowerCase());
 function fluffyManagerTest(files: string[], gameId: string) {
-  const matcher = (file => FLUFFY_FILES.includes(file));
+  const matcher = (file: string) => FLUFFY_FILES.includes(file.toLowerCase());
   const supported = ((RE_ENGINE_GAMES[gameId] !== undefined)
                  && (files.filter(matcher).length > 0));
 
-  return Bluebird.Promise.resolve({ supported, requiredFiles: FLUFFY_FILES });
+  return Bluebird.Promise.resolve({ supported, requiredFiles: [] });
 }
 
 function fluffyDummyInstaller(context: types.IExtensionContext) {
@@ -657,7 +657,7 @@ function main(context: types.IExtensionContext) {
   };
 
   context.requireExtension('quickbms-support');
-  context.registerInstaller('fluffyquackmanager', 20,
+  context.registerInstaller('fluffyquackmanager', 5,
     fluffyManagerTest, () => fluffyDummyInstaller(context));
 
   context.registerAPI('addReEngineGame',
