@@ -8,6 +8,14 @@ export interface IValidationErrorInfo {
   validationType: ValidationType;
 }
 
+export interface IProps {
+  state: types.IState;
+  installedMods: { [modId: string]: types.IMod };
+  enabledMods: { [modId: string]: types.IMod };
+  profile: types.IProfile;
+  gameConfig: IREEngineConfig;
+}
+
 export class ValidationError extends Error {
   private mAffectedGame: string;
   private mValidationType: ValidationType;
