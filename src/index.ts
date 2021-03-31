@@ -267,7 +267,7 @@ function fluffyDummyInstaller(context: types.IExtensionContext) {
 
 function copyToTemp(filePath) {
   return fs.statAsync(filePath)
-    .then(() => fs.ensureDirAsync(QBMS_TEMP_PATH))
+    .then(() => fs.ensureDirWritableAsync(QBMS_TEMP_PATH))
     .then(() => fs.copyAsync(filePath, path.join(QBMS_TEMP_PATH, path.basename(filePath))));
 }
 
@@ -280,7 +280,7 @@ function removeFromTemp(fileName) {
 }
 
 function generateFilteredList(files: string[], state: types.IState, gameMode: string) {
-  return fs.ensureDirAsync(QBMS_TEMP_PATH)
+  return fs.ensureDirWritableAsync(QBMS_TEMP_PATH)
     .then(() => getFileList(state, gameMode))
     .then(fileList => {
       const filtered: string[] = [];
