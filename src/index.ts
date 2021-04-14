@@ -451,7 +451,12 @@ async function revalidateFilePaths(hashes, api) {
   const gameId = selectors.activeGameId(state);
   const gameConfig: IREEngineConfig = RE_ENGINE_GAMES[gameId];
   if (gameConfig === undefined) {
-    return Promise.reject(new Error('failed to revalidate file paths'));
+    // At this point we know we're attempting to revalidate an RE engine game
+    //  but it's perfectly possible for the game extension to NOT have been
+    //  loaded (if the game has become undiscovered for whatever reason)
+    //  For this reason we're going to log this even and not raise an error.
+    log('error', 'failed to revalidate file paths', gameId)
+    return Promise.resolve();
   }
   const discoveryPath = getDiscoveryPath(api, gameId);
   if (discoveryPath === undefined) {
