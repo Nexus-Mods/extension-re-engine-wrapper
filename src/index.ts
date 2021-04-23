@@ -352,6 +352,9 @@ async function getModRelPaths(mod: types.IMod, stagingFolder: string): Promise<s
       entry.filePath.replace(modInstallPath + path.sep, ''));
     fileEntries = fileEntries.concat(relFilePaths);
   })
+    .catch(err => ['ENOENT', 'ENOTFOUND'].includes(err.code)
+      ? Promise.resolve()
+      : Promise.reject(err))
     .then(() => Promise.resolve(fileEntries));
 }
 
