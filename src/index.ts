@@ -94,16 +94,32 @@ async function validationErrorHandler(api: types.IExtensionApi,
   }
 
   const mods = util.getSafe(state, ['persistent', 'mods', gameConfig.gameMode], {});
-  const modKeys = Object.keys(mods);
+  let downloads = util.getSafe(state, ['persistent', 'downloads', 'files'], {});
+  downloads = Object.keys(downloads)
+    .reduce((accum, iter) => {
+      const download: types.IDownload = downloads[iter];
+      if (!!download?.game && download.game.includes(gameConfig.gameMode)) {
+        accum[iter] = download;
+      }
+      return accum;
+    }, {});
   const gameFileAttachments: IAttachmentData[] = (!!gameConfig.getErrorAttachments)
     ? await gameConfig.getErrorAttachments(err)
     : [];
+
   const attachments: types.IAttachment[] = [
     {
       id: 'installedMods',
       type: 'data',
-      data: modKeys.join(', ') || 'None',
-      description: 'List of installed mods',
+      data: {
+        persistent: {
+          mods,
+          downloads: {
+            files: downloads,
+          },
+        }
+      },
+      description: 'Mods data',
     },
   ];
 
