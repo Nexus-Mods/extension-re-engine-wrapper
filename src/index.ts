@@ -699,16 +699,26 @@ function tryRegistration(func: () => Promise<void>,
   });
 }
 
+function ensureBackUps(api: types.IExtensionApi, gameConfig: IREEngineConfig) {
+  const state = api.getState();
+  const stagingFolder = selectors.installPathForGame(state, gameConfig.gameMode);
+  const toStaging = (filePath: string) => {
+    const stagingFilePath = path.join(stagingFolder, path.basename(filePath));
+    return fs.statAsync(stagingFilePath)
+      .then(() => Promise.resolve()) // Backup already present.
+      .catch(err => fs.copyAsync(filePath, stagingFilePath));
+  };
+  const { extract, invalidation, revalidation } = gameConfig.bmsScriptPaths;
+  return Promise.all([extract, invalidation, revalidation, gameConfig.fileListPath].map(toStaging));
+}
+
 function addReEngineGame(context: types.IExtensionContext,
                          gameConfig: IREEngineConfig,
                          callback?: (err: Error) => void) {
   const api = context.api;
   const state = api.getState();
   const stagingFolder = selectors.installPathForGame(state, gameConfig.gameMode);
-  const fileList = path.join(stagingFolder, path.basename(gameConfig.fileListPath));
-  fs.statAsync(fileList)
-    .then(() => Promise.resolve()) // Backup already present.
-    .catch(err => fs.copyAsync(gameConfig.fileListPath, fileList));
+  const getStagingPath = (filePath: string) => path.join(stagingFolder, path.basename(filePath));
 
   return tryRegistration(() => (api.ext?.qbmsRegisterGame === undefined)
     ? Promise.reject(new REGameRegistrationError(gameConfig.gameMode, 'qbmsRegisterGame is unavailable'))
@@ -717,13 +727,23 @@ function addReEngineGame(context: types.IExtensionContext,
       if (RE_ENGINE_GAMES[gameConfig.gameMode] !== undefined) {
         return Promise.resolve();
       }
-      RE_ENGINE_GAMES[gameConfig.gameMode] = gameConfig;
-      api.ext.qbmsRegisterGame(gameConfig.gameMode);
-      if (callback !== undefined) {
-        callback(undefined);
-      }
+      return ensureBackUps(context.api, gameConfig)
+        .then(() => {
+          RE_ENGINE_GAMES[gameConfig.gameMode] = {
+            ...gameConfig,
+            bmsScriptPaths: {
+              extract: getStagingPath(gameConfig.bmsScriptPaths.extract),
+              invalidation: getStagingPath(gameConfig.bmsScriptPaths.invalidation),
+              revalidation: getStagingPath(gameConfig.bmsScriptPaths.revalidation),
+            }
+          };
+          api.ext.qbmsRegisterGame(gameConfig.gameMode);
+          if (callback !== undefined) {
+            callback(undefined);
+          }
 
-      return Promise.resolve();
+          return Promise.resolve();
+        });
     })
     .catch(err => {
       if (callback !== undefined) {
