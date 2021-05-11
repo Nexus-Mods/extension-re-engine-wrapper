@@ -93,6 +93,14 @@ async function validationErrorHandler(api: types.IExtensionApi,
     return Promise.resolve();
   }
 
+  let profiles: { [profileId: string]: types.IProfile } = util.getSafe(state, ['persistent', 'profiles'], {});
+  profiles = Object.keys(profiles).reduce((accum, iter) => {
+    if (profiles[iter].gameId === gameConfig.gameMode) {
+      accum[iter] = profiles[iter];
+    }
+    return accum;
+  }, {});
+
   const mods = util.getSafe(state, ['persistent', 'mods', gameConfig.gameMode], {});
   let downloads = util.getSafe(state, ['persistent', 'downloads', 'files'], {});
   downloads = Object.keys(downloads)
@@ -113,10 +121,13 @@ async function validationErrorHandler(api: types.IExtensionApi,
       type: 'data',
       data: {
         persistent: {
-          mods,
+          mods: {
+            [gameConfig.gameMode]: mods,
+          },
           downloads: {
             files: downloads,
           },
+          profiles,
         }
       },
       description: 'Mods data',
@@ -860,19 +871,19 @@ function main(context: types.IExtensionContext) {
       revalidate(context.api, gameConfig);
     });
 
-    context.api.events.on('did-deploy', () => {
+    context.api.onAsync('did-deploy', () => {
       const state = context.api.getState();
       const profile = selectors.activeProfile(state);
       const gameConfig: IREEngineConfig = RE_ENGINE_GAMES[profile?.gameId];
       if (gameConfig === undefined || profileChanging) {
-        return;
+        return Promise.resolve();
       }
 
-      invalidate(context.api, gameConfig);
+      return invalidate(context.api, gameConfig);
     });
 
-    context.api.events.on('purge-mods', () => {
-      revalidate(context.api);
+    context.api.onAsync('purge-mods', () => {
+      return revalidate(context.api);
     });
   });
 }
