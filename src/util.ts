@@ -1,3 +1,4 @@
+import path from 'path';
 import { selectors, types, util } from 'vortex-api';
 
 import { getSupportMap } from './index';
@@ -31,4 +32,12 @@ export function genProps(api: types.IExtensionApi, profileId?: string): IProps {
       return accum;
     }, {});
   return { state, profile, gameConfig, enabledMods, installedMods };
+}
+
+export function getStagingFilePath(api: types.IExtensionApi,
+                                   gameId: string,
+                                   bmsScriptPath: string) {
+  const state = api.getState();
+  const stagingFolder = selectors.installPathForGame(state, gameId);
+  return path.join(stagingFolder, path.basename(bmsScriptPath));
 }

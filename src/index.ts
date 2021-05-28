@@ -13,7 +13,7 @@ import {
   REGameRegistrationError, ValidationError,
 } from './types';
 
-import { genProps } from './util';
+import { genProps, getStagingFilePath } from './util';
 
 const uniApp = app || remote.app;
 
@@ -171,7 +171,7 @@ function testArchive(files, operationPath, archivePath, api, gameId): Promise<st
   return new Promise((resolve, reject) => api.ext.qbmsList({
     gameMode: gameId,
     // Yes - the extract script is used for listing too.
-    bmsScriptPath: gameConf.bmsScriptPaths.extract,
+    bmsScriptPath: getStagingFilePath(api, gameId, gameConf.bmsScriptPaths.extract),
     archivePath,
     operationPath,
     qbmsOptions: { wildCards: files },
@@ -551,7 +551,7 @@ async function revalidateFilePaths(hashes, api) {
           .then(() => new Promise((resolve, reject) => api.ext.qbmsWrite({
             gameMode: gameId,
             archivePath,
-            bmsScriptPath: gameConfig.bmsScriptPaths.revalidation,
+            bmsScriptPath: getStagingFilePath(api, gameId, gameConfig.bmsScriptPaths.revalidation),
             operationPath: discoveryPath,
             qbmsOptions: {},
             callback: (err: Error, data: any) => {
@@ -650,7 +650,10 @@ async function invalidateFilePaths(api: types.IExtensionApi,
         return legPath?.key || fallback;
       };
 
-      return copyToTemp(gameConfig.bmsScriptPaths.invalidation)
+      const invalScriptPath = getStagingFilePath(api,
+        gameConfig.gameMode, gameConfig.bmsScriptPaths.invalidation);
+
+      return copyToTemp(invalScriptPath)
         .then(() => Promise.all(archives.map(arcMatch => {
           const fallbackArcKey = path.basename(arcMatch.archivePath, '.pak');
           const arcKey = getLegacyKey(arcMatch.archivePath, fallbackArcKey);
@@ -746,7 +749,7 @@ function addReEngineGame(context: types.IExtensionContext,
               extract: getStagingPath(gameConfig.bmsScriptPaths.extract),
               invalidation: getStagingPath(gameConfig.bmsScriptPaths.invalidation),
               revalidation: getStagingPath(gameConfig.bmsScriptPaths.revalidation),
-            }
+            },
           };
           api.ext.qbmsRegisterGame(gameConfig.gameMode);
           if (callback !== undefined) {
@@ -882,7 +885,7 @@ function main(context: types.IExtensionContext) {
       return invalidate(context.api, gameConfig);
     });
 
-    context.api.onAsync('purge-mods', () => {
+    context.api.onAsync('will-purge', () => {
       return revalidate(context.api);
     });
   });
