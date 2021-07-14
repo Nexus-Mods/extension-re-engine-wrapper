@@ -16,6 +16,34 @@ export interface IProps {
   gameConfig: IREEngineConfig;
 }
 
+// The invalidation cache itself which we serialize to file.
+export interface ICache { [archiveId: string]: ICacheEntry[] };
+
+// Cache entry as stored inside our invalidation cache.
+export interface ICacheEntry {
+  hashVal: number;
+  data: {
+      offset: string;
+      lowercase: string;
+      uppercase: string;
+  };
+}
+
+// List entry as parsed from the .list file.
+export interface IListEntry {
+  hash: number;
+  offset: string;
+  lowercase: string;
+  uppercase: string;
+}
+
+export class InvalidationCacheError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidationCacheError';
+  }
+}
+
 export class ValidationError extends Error {
   private mAffectedGame: string;
   private mValidationType: ValidationType;
@@ -103,6 +131,7 @@ export interface IREEngineGameSupport {
 export interface IArchiveMatch {
   archivePath: string;
   matchedFiles: string[];
+  isSuperseded?: boolean;
 }
 
 export interface IDeployment {

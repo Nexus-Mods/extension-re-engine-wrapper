@@ -5,7 +5,7 @@ import { actions, fs, log, selectors, types, util } from 'vortex-api';
 
 import turbowalk, { IEntry } from 'turbowalk';
 
-import cache from './cache';
+import cache, { InvalidationCache } from './cache';
 import { CACHE_FILE } from './common';
 import murmur3 from './murmur3';
 import {
@@ -50,38 +50,11 @@ async function getFileList(state: types.IState, gameMode: string): Promise<strin
 }
 
 async function validationErrorHandler(api: types.IExtensionApi,
-                                      forcedOperation: boolean,
                                       gameConfig: IREEngineConfig,
                                       err: any): Promise<void> {
   const state = api.getState();
-  const reportIncompleteList = () => {
-    if ((err as ValidationError).validationType !== 'invalidation') {
-      return Promise.resolve();
-    }
-    const notifId = 're_engine_missing_files';
-    const notifications = util.getSafe(state, ['session', 'notifications', 'notifications'], []);
-    if (notifications.find(notif => notif.id === notifId) === undefined) {
-      api.showErrorNotification('Missing filepaths in game archives',
-        'Unfortunately Vortex cannot install this mod correctly as it seems to include one or more '
-        + 'unrecognized files.<br/><br/>'
-        + 'This can happen when:<br/>'
-        + '1. Your game archives do not include the files required for this mod to work (Possibly missing DLC)<br/>'
-        + '2. The mod author has packed his mod incorrectly and has included non-mod files such as readmes, screenshots, etc. '
-        + '(In which case you don\'t have to worry - the mod should still work) <br/><br/>'
-        + 'To report this issue, please use the feedback system and make sure you attach Vortex\'s latest log file '
-        + 'so we can review the missing files',
-        { isBBCode: true, allowReport: false });
-    }
-
-    return Promise.resolve();
-  };
-
   if (err instanceof util.ProcessCanceled) {
     return Promise.resolve();
-  }
-
-  if (err instanceof ValidationError) {
-    (forcedOperation) ? Promise.resolve() : reportIncompleteList();
   }
 
   if (err instanceof util.UserCanceled) {
@@ -128,7 +101,7 @@ async function validationErrorHandler(api: types.IExtensionApi,
             files: downloads,
           },
           profiles,
-        }
+        },
       },
       description: 'Mods data',
     },
@@ -235,10 +208,22 @@ async function getGameArchives(api, gameId): Promise<string[]> {
       ? resolve([]) : reject(err)));
 }
 
-async function findMatchingArchives(files, discoveryPath, api, gameId): Promise<IArchiveMatch[]> {
+interface IMatchResult {
+  matchedAllFiles: boolean;
+  archiveMatches: IArchiveMatch[];
+}
+async function findMatchingArchives(files, discoveryPath, api, gameId): Promise<IMatchResult> {
+  let totalMatched = 0;
+  const defaultObject: IMatchResult = { archiveMatches: [], matchedAllFiles: false };
   return getGameArchives(api, gameId)
     .then((gameArchives) => {
       gameArchives.sort((lhs, rhs) => {
+        // Why is this sort necessary you ask ? it's not; it ensures that
+        //  the larger archives which are usually at the directory's root
+        //  are used last so that any validation operation's progress does
+        //  not appear to "halt" at the very beginning. This is just for
+        //  psychological purposes, giving the user somewhat quicker feedback
+        //  that Vortex is working and he should just wait.
         const lhsSegments = lhs.split(path.sep);
         const rhsSegments = lhs.split(path.sep);
         return lhsSegments.length !== rhsSegments.length
@@ -246,20 +231,41 @@ async function findMatchingArchives(files, discoveryPath, api, gameId): Promise<
           : lhs.length - rhs.length;
       });
       return Bluebird.Promise.reduce(gameArchives, async (accum, iter) => {
+        if (accum.matchedAllFiles) {
+          return Bluebird.Promise.resolve(accum);
+        }
         try {
           const matchedFiles: string[] = await testArchive(files, discoveryPath, iter, api, gameId);
+          const isSuperseded = accum.archiveMatches.find((arc: IArchiveMatch) => {
+            if (arc.isSuperseded) {
+              return false;
+            }
+
+            if ((arc.matchedFiles.length > matchedFiles.length)
+             && (matchedFiles.filter(match => !arc.matchedFiles.includes(match)).length === 0)) {
+              return true;
+            }
+          }) !== undefined;
           if (matchedFiles.length > 0) {
+            if (!isSuperseded) {
+              totalMatched += matchedFiles.length;
+              if (totalMatched === files.length) {
+                accum.matchedAllFiles = true;
+              }
+            }
             const archiveMatch: IArchiveMatch = {
               archivePath: iter,
               matchedFiles,
+              isSuperseded: isSuperseded ?? undefined,
             };
-            accum.push(archiveMatch);
+            accum.archiveMatches.push(archiveMatch);
           }
         } catch (err) {
           // nop
         }
-        return Promise.resolve(accum);
-      }, []);
+
+        return Bluebird.Promise.resolve(accum);
+      }, defaultObject);
     });
 }
 
@@ -302,8 +308,8 @@ function removeFromTemp(fileName) {
   const filePath = path.join(QBMS_TEMP_PATH, fileName);
   return fs.removeAsync(filePath)
     .catch(err => (err.code === 'ENOENT')
-      ? Promise.resolve()
-      : Promise.reject(err));
+      ? Bluebird.Promise.resolve()
+      : Bluebird.Promise.reject(err));
 }
 
 function generateFilteredList(files: string[], state: types.IState, gameMode: string) {
@@ -326,63 +332,8 @@ function generateFilteredList(files: string[], state: types.IState, gameMode: st
 function removeFilteredList() {
   return fs.removeAsync(FILTERED_LIST)
     .catch(err => (err.code === 'ENOENT')
-      ? Promise.resolve()
-      : Promise.reject(err));
-}
-
-function filterOutInvalidated(wildCards, stagingFolder): Bluebird<string[]> {
-  const entries = wildCards.map(entry => ({
-    hash: murmur3.getMurmur3Hash(entry),
-    filePath: entry,
-  }));
-  return cache.findArcKeys(stagingFolder, entries.map(entry => entry.hash))
-    .then(arcMap => {
-      if (arcMap === undefined) {
-        // None of the entries have been invalidated.
-        return Promise.resolve(wildCards);
-      }
-
-      // Look up existing invalidations.
-      const mapKeys = Object.keys(arcMap).filter(key =>
-        entries.find(entry =>
-          arcMap[key].indexOf(entry.hash) !== -1) !== undefined);
-
-      let flat = [];
-      mapKeys.forEach(key => {
-        flat = flat.concat(arcMap[key]);
-      });
-
-      const filtered = entries.reduce((accumulator, entry) => {
-        if (flat.find(mapEntry => mapEntry === entry.hash) === undefined) {
-          accumulator.push(entry.filePath);
-        }
-        return accumulator;
-      }, []);
-
-      if (filtered.length === 0) {
-        log('debug', 'all entries have already been invalidated');
-      }
-
-      return Bluebird.Promise.resolve(filtered);
-    });
-}
-
-async function getModRelPaths(mod: types.IMod, stagingFolder: string): Promise<string[]> {
-  if (mod?.installationPath === undefined) {
-    return Promise.resolve([]);
-  }
-  const modInstallPath = path.join(stagingFolder, mod.installationPath);
-  let fileEntries: string[] = [];
-  return turbowalk(modInstallPath, entries => {
-    const filtered = entries.filter(file => !file.isDirectory && file.filePath.includes('natives'));
-    const relFilePaths = filtered.map(entry =>
-      entry.filePath.replace(modInstallPath + path.sep, ''));
-    fileEntries = fileEntries.concat(relFilePaths);
-  })
-    .catch(err => ['ENOENT', 'ENOTFOUND'].includes(err.code)
-      ? Promise.resolve()
-      : Promise.reject(err))
-    .then(() => Promise.resolve(fileEntries));
+      ? Bluebird.Promise.resolve()
+      : Bluebird.Promise.reject(err));
 }
 
 async function invalidate(api: types.IExtensionApi,
@@ -396,40 +347,25 @@ async function invalidate(api: types.IExtensionApi,
     log('debug', 'failed to generate props');
     return;
   }
-  const { profile, enabledMods, gameConfig } = props;
-  const stagingFolder = selectors.installPathForGame(state, profile.gameId);
-  const fileEntries: { [modId: string]: string[] } = {};
-  let idx = 0;
-  const progress = (modId: string, total: number) => {
+  const { gameConfig } = props;
+  const deploymentManifest = await util.getManifest(api, '', gameConfig.gameMode);
+  const fileEntries = deploymentManifest.files.map(file => file.relPath.replace(/\\/g, '/'));
+  const progress = (message: string, totalProgress: number) => {
     api.sendNotification({
       id: ACTIVITY_INVAL,
       type: 'activity',
       title: 'Invalidating game filepaths - don\'t run the game!',
-      message: modId,
+      message,
       noDismiss: true,
       allowSuppress: false,
-      progress: (idx * 100) / total,
+      progress: totalProgress,
     });
-    ++idx;
   };
-
-  await Promise.all(Object.keys(enabledMods).map(async (modId: string) => {
-    const modRelPaths = await getModRelPaths(enabledMods[modId], stagingFolder);
-    if (modRelPaths.length === 0) {
-      return;
-    }
-    fileEntries[modId] = modRelPaths.map(fileEntry => fileEntry.replace(/\\/g, '/'));
-  }));
-
-  const modIds = Object.keys(fileEntries);
-  for (const modId of modIds) {
-    progress(modId, modIds.length);
-    try {
-      await invalidateFilePaths(api, fileEntries[modId], gameConfig.gameMode);
-    } catch (err) {
-      if (err instanceof util.ProcessCanceled) {
-        break;
-      }
+  try {
+    await invalidateFilePaths(api, fileEntries, gameConfig.gameMode, progress);
+  } catch (err) {
+    const isCanceled = err instanceof util.ProcessCanceled;
+    if (!isCanceled) {
       api.showErrorNotification('Invalidation failed', err);
     }
   }
@@ -448,32 +384,17 @@ async function revalidate(api: types.IExtensionApi, forceGameConfig?: IREEngineC
     return;
   }
 
-  const { gameConfig, installedMods } = props;
+  const { gameConfig } = props;
+  const deploymentManifest = await util.getManifest(api, '', gameConfig.gameMode);
+  const fileEntries = deploymentManifest.files.map(file => file.relPath.replace(/\\/g, '/'));
+  try {
+    await revalidateFilePaths(fileEntries.map(entry => murmur3.getMurmur3Hash(entry)), api);
+  } catch (err) {
+    validationErrorHandler(api, gameConfig, err);
+  }
 
-  const stagingFolder = selectors.installPathForGame(state, gameConfig.gameMode);
-  const fileEntries: { [modId: string]: string[] } = {};
-  return Promise.all(Object.keys(installedMods).map(async (modId: string) => {
-    const relFilePaths = await getModRelPaths(installedMods[modId], stagingFolder);
-    if (relFilePaths.length === 0) {
-      return undefined;
-    } else {
-      fileEntries[modId] = relFilePaths.map(fileEntry => fileEntry.replace(/\\/g, '/'));
-    }
-  }))
-    .then(async () => {
-      for (const modId of Object.keys(fileEntries)) {
-        try {
-          await revalidateFilePaths(fileEntries[modId].map(entry =>
-            murmur3.getMurmur3Hash(entry)), api);
-        } catch (err) {
-          validationErrorHandler(api, false, gameConfig, err);
-        }
-      }
-    })
-    .finally(() => {
-      api.store.dispatch(actions.dismissNotification(ACTIVITY_REVAL));
-      return Promise.resolve();
-    });
+  api.store.dispatch(actions.dismissNotification(ACTIVITY_REVAL));
+  return Promise.resolve();
 }
 
 async function revalidateFilePaths(hashes, api) {
@@ -485,7 +406,7 @@ async function revalidateFilePaths(hashes, api) {
     //  but it's perfectly possible for the game extension to NOT have been
     //  loaded (if the game has become undiscovered for whatever reason)
     //  For this reason we're going to log this even and not raise an error.
-    log('error', 'failed to revalidate file paths', gameId)
+    log('error', 'failed to revalidate file paths', gameId);
     return Promise.resolve();
   }
   const discoveryPath = getDiscoveryPath(api, gameId);
@@ -493,8 +414,8 @@ async function revalidateFilePaths(hashes, api) {
     return Promise.reject(new Error('Game is not discovered'));
   }
 
-  const stagingFolder = selectors.installPathForGame(state, gameId);
-  return cache.findArcKeys(stagingFolder, hashes)
+  const invalCache = cache.getInstance(api);
+  return invalCache.findArcKeys(hashes)
     .then(arcMap => {
       if (arcMap === undefined) {
         const err = new Error('Failed to map hashes to their corresponding archive keys');
@@ -546,10 +467,13 @@ async function revalidateFilePaths(hashes, api) {
           return Promise.reject(new Error(`missing game archive - ${key}`));
         }
 
-        return cache.getInvalEntries(stagingFolder, arcMap[key], key)
-          .then(entries => cache.writeInvalEntries(discoveryPath, entries))
+        return invalCache.getInvalEntries(arcMap[key], key)
+          .tap(entries => log('debug', 'revalidating entries:',
+            { archiveId: key, totalEntries: entries.length }))
+          .then(entries => invalCache.writeInvalEntries(discoveryPath, entries))
           .then(() => new Promise((resolve, reject) => api.ext.qbmsWrite({
             gameMode: gameId,
+            quiet: true,
             archivePath,
             bmsScriptPath: getStagingFilePath(api, gameId, gameConfig.bmsScriptPaths.revalidation),
             operationPath: discoveryPath,
@@ -564,7 +488,7 @@ async function revalidateFilePaths(hashes, api) {
             : (error instanceof util.ProcessCanceled)
               ? Promise.reject(error)
               : Promise.reject(new Error('Failed to re-validate filepaths')))
-          .then(() => cache.removeOffsets(stagingFolder, arcMap[key], key));
+          .then(() => invalCache.removeOffsets(arcMap[key], key));
       });
     });
 }
@@ -593,7 +517,7 @@ function addToFileList(state: types.IState, gameMode: string, files: string[]) {
 async function invalidateFilePaths(api: types.IExtensionApi,
                                    wildCards: string[],
                                    gameMode: string,
-                                   force: boolean = false) {
+                                   progressCB: (message: string, totalProgress: number) => void) {
   const state: types.IState = api.store.getState();
   const gameConfig: IREEngineConfig = RE_ENGINE_GAMES[gameMode];
   if (gameConfig === undefined) {
@@ -607,33 +531,13 @@ async function invalidateFilePaths(api: types.IExtensionApi,
     return Promise.reject(new Error('Game is not discovered'));
   }
 
-  const stagingFolder = selectors.installPathForGame(state, gameMode);
-  const filterPromise = (force)
-    ? Bluebird.Promise.resolve(wildCards)
-    : filterOutInvalidated(wildCards, stagingFolder);
-
-  return filterPromise.then(filtered => addToFileList(state, gameMode, filtered)
-    .then(() => findMatchingArchives(filtered, discoveryPath, api, gameMode))
-    .then((archives: IArchiveMatch[]) => {
-      if (archives.length === 0) {
-        // Couldn't find a matching archive. There's is a high chance
-        //  we're installing the same mod and the mod author may have
-        //  included a .txt file or some other unnecessary file inside
-        //  the mod's natives folder, in which case this is not a problem
-        //  - log the missing files and keep going.
-        const invalidationsExist = filtered.length !== wildCards.length;
-        log(invalidationsExist
-          ? 'warn' : 'error', 'Missing filepaths in game archive', filtered.join('\n'));
-        return (invalidationsExist)
-          ? Promise.resolve()
-          : Promise.reject(new ValidationError({
-            message: 'Failed to match mod files to game archives',
-            filePaths: filtered,
-            gameMode,
-            validationType: 'invalidation',
-          }));
-      }
-
+  progressCB('Scanning game archives...', 5);
+  const invalCache = cache.getInstance(api);
+  return addToFileList(state, gameMode, wildCards)
+    .then(() => findMatchingArchives(wildCards, discoveryPath, api, gameMode))
+    .then((result: IMatchResult) => {
+      progressCB('Finished archive scan...', 20);
+      const archives = result.archiveMatches.filter(arc => arc.isSuperseded !== true);
       const legacyPaths = (gameConfig.legacyArcNames !== undefined)
         ? Object.keys(gameConfig.legacyArcNames).map(arc => ({
           key: gameConfig.legacyArcNames[arc].replace('.pak', ''),
@@ -653,8 +557,10 @@ async function invalidateFilePaths(api: types.IExtensionApi,
       const invalScriptPath = getStagingFilePath(api,
         gameConfig.gameMode, gameConfig.bmsScriptPaths.invalidation);
 
+      const increment = 80 / archives.length;
       return copyToTemp(invalScriptPath)
-        .then(() => Promise.all(archives.map(arcMatch => {
+        .then(() => Promise.all(archives.map((arcMatch, idx) => {
+          progressCB(`Invalidating ${arcMatch.archivePath}`, 20 + (idx * increment));
           const fallbackArcKey = path.basename(arcMatch.archivePath, '.pak');
           const arcKey = getLegacyKey(arcMatch.archivePath, fallbackArcKey);
           const data = arcMatch.matchedFiles;
@@ -675,8 +581,11 @@ async function invalidateFilePaths(api: types.IExtensionApi,
                   if (err !== undefined) {
                     reject(err);
                   } else {
-                    return cache.readNewInvalEntries(path.join(discoveryPath, 'TEMPORARY_FILE'))
-                      .then(entries => cache.insertOffsets(stagingFolder, entries, arcKey))
+                    // tslint:disable-next-line: max-line-length
+                    return invalCache.readNewInvalEntries(path.join(discoveryPath, 'TEMPORARY_FILE'))
+                      .tap((entries) => log('debug', 'invalidating entries',
+                        { archiveId: arcKey, totalEntries: entries.length }))
+                      .then(entries => invalCache.insertOffsets(entries, arcKey))
                       .then(() => resolve(undefined))
                       .catch(err2 => reject(err2));
                   }
@@ -685,14 +594,15 @@ async function invalidateFilePaths(api: types.IExtensionApi,
               api.ext.qbmsWrite(qbmsOpProps);
             }));
         })))
-        .catch(err => validationErrorHandler(api, force, gameConfig, err))
+        .catch(err => validationErrorHandler(api, gameConfig, err))
         .finally(() => {
+          progressCB('Almost finished...', 99);
           return removeFromTemp(path.join(QBMS_TEMP_PATH,
             path.basename(gameConfig.bmsScriptPaths.invalidation)))
             .then(() => removeFilteredList());
         });
-    }))
-    .catch(err => validationErrorHandler(api, force, gameConfig, err))
+    })
+    .catch(err => validationErrorHandler(api, gameConfig, err))
     .finally(() => api.store.dispatch(actions.dismissNotification(ACTIVITY_INVAL)));
 }
 
@@ -791,13 +701,11 @@ function main(context: types.IExtensionContext) {
     //  What we want to do here is revalidate all filepaths in all
     //  game archives.
     const state = context.api.getState();
-    const staging = selectors.installPathForGame(state, gameConfig.gameMode);
-
     context.api.awaitUI()
       .then(() => addReEngineGame(context, gameConfig, callback))
       .then(() => revalidate(context.api, gameConfig))
       .then(() => {
-        cache.migrateInvalCache(staging);
+        InvalidationCache.getInstance(context.api).migrateInvalCache();
         callback(undefined);
       })
       .then(() => {
