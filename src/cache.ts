@@ -216,6 +216,13 @@ export class InvalidationCache {
   }
 
   private getStagingFolder() {
+    const state = this.mAPI.getState();
+    if (this.mGameMode === undefined) {
+      this.mGameMode = selectors.activeGameId(state);
+      if (this.mGameMode === undefined) {
+        throw new InvalidationCacheError('User is not managing any game');
+      }
+    }
     const stagingFolder = selectors.installPathForGame(this.mAPI.getState(), this.mGameMode);
     if (stagingFolder === undefined) {
       // How ?

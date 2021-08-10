@@ -705,7 +705,8 @@ function main(context: types.IExtensionContext) {
       .then(() => addReEngineGame(context, gameConfig, callback))
       .then(() => revalidate(context.api, gameConfig))
       .then(() => {
-        InvalidationCache.getInstance(context.api).migrateInvalCache();
+        const invalCache = InvalidationCache.getInstance(context.api);
+        invalCache.migrateInvalCache();
         callback(undefined);
       })
       .then(() => {
