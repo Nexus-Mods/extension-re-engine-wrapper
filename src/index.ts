@@ -1,5 +1,4 @@
 import * as Bluebird from 'bluebird';
-import { app, remote } from 'electron';
 import path from 'path';
 import { actions, fs, log, selectors, types, util } from 'vortex-api';
 
@@ -15,9 +14,7 @@ import {
 
 import { genProps, getStagingFilePath } from './util';
 
-const uniApp = app || remote.app;
-
-const QBMS_TEMP_PATH = path.join(uniApp.getPath('userData'), 'temp', 'qbms');
+const QBMS_TEMP_PATH = path.join(util.getVortexPath('userData'), 'temp', 'qbms');
 const RE_ENGINE_GAMES: IREEngineGameSupport = {};
 export const getSupportMap = () => RE_ENGINE_GAMES;
 
@@ -109,7 +106,7 @@ async function validationErrorHandler(api: types.IExtensionApi,
 
   const stagingFolder = selectors.installPathForGame(state, gameConfig.gameMode);
   const qbmsLog: IAttachmentData = {
-    filePath: path.join(uniApp.getPath('userData'), 'quickbms.log'),
+    filePath: path.join(util.getVortexPath('userData'), 'quickbms.log'),
     description: 'QuickBMS log file',
   };
   const cacheFile: IAttachmentData = {
