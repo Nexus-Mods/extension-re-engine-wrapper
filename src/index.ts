@@ -136,7 +136,7 @@ async function validationErrorHandler(api: types.IExtensionApi,
 function testArchive(files, operationPath, archivePath, api, gameId): Promise<string[]> {
   const gameConf: IREEngineConfig = RE_ENGINE_GAMES[gameId];
   if (gameConf === undefined) {
-    return Promise.reject();
+    return Promise.reject(new util.ProcessCanceled('no game config'));
   }
   return new Promise((resolve, reject) => api.ext.qbmsList({
     gameMode: gameId,
