@@ -8,7 +8,7 @@ import cache, { InvalidationCache } from './cache';
 import { CACHE_FILE } from './common';
 import murmur3 from './murmur3';
 import {
-  IArchiveMatch, IAttachmentData, IProps, IREEngineConfig, IREEngineGameSupport,
+  IArchiveMatch, IAttachmentData, InvalidationCacheError, IProps, IREEngineConfig, IREEngineGameSupport,
   REGameRegistrationError, ValidationError,
 } from './types';
 
@@ -703,7 +703,13 @@ function main(context: types.IExtensionContext) {
       .then(() => revalidate(context.api, gameConfig))
       .then(() => {
         const invalCache = InvalidationCache.getInstance(context.api);
-        invalCache.migrateInvalCache();
+        try {
+          invalCache.migrateInvalCache();
+        } catch (err) {
+          if (!(err instanceof InvalidationCacheError)) {
+            return Promise.reject(err);
+          }
+        }
         callback(undefined);
       })
       .then(() => {

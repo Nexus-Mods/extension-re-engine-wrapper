@@ -1,6 +1,6 @@
 {
   "name": "re-engine-wrapper",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Wrapper for common RE Engine functionality",
   "main": "./out/index.js",
   "repository": "",
