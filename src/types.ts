@@ -97,6 +97,18 @@ export interface IREEngineConfig {
 
   fileListPath: string;
 
+  // Latest RT update from Capcom appears to be using a different
+  //  seed value for each filepath, making it quite difficult
+  //  to generate the correct expected hash value to compare against.
+  //  Fortunately the modding community convinced them to provide the
+  //  non-RT game version as a beta branch which is what this property
+  //  is for. It ensures that the Vortex Steam File Downloader uses
+  //  the correct codebase when restoring files.
+  steamBranch?: string;
+
+  // Same as above, we need to provide the non-rt depot id.
+  depotIds?: number[];
+
   // Used during re-engine-wrapper cache migration.
   //  Do not use this for any other games besides RE2 and DMC5
   legacyArcNames?: { [arcKey: string]: string };
@@ -136,4 +148,30 @@ export interface IArchiveMatch {
 
 export interface IDeployment {
   [modType: string]: types.IDeployedFile[];
+}
+
+export interface ISteamKitParameters {
+  Username?: string;
+  Password?: string;
+  RememberPassword?: boolean;
+  ManifestOnly?: boolean;
+  CellId?: number;
+
+  // Files need to be separated by /r or /n
+  FileList?: string;
+  InstallDirectory?: string;
+  VerifyAll?: boolean;
+  MaxServers?: number;
+  MaxDownloads?: number;
+  LoginId?: number;
+
+  // Steam app id
+  AppId?: number;
+
+  PubFile?: string;
+  UgcId?: string;
+  Branch?: string;
+  BetaBranchPassword?: string;
+  DepotIdList?: number[];
+  ManifestIdList?: number[];
 }

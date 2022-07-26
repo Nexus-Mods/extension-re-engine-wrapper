@@ -9,9 +9,10 @@ import { CACHE_FILE } from './common';
 import murmur3 from './murmur3';
 import {
   IArchiveMatch, IAttachmentData, InvalidationCacheError, IProps, IREEngineConfig, IREEngineGameSupport,
-  REGameRegistrationError, ValidationError,
+  REGameRegistrationError,
 } from './types';
 
+import { isSteamKitAvaliable, showVerifyIntegrityDialog, runFileVerification } from './steamkitIntegration';
 import { genProps, getStagingFilePath } from './util';
 
 const QBMS_TEMP_PATH = path.join(util.getVortexPath('userData'), 'temp', 'qbms');
@@ -49,7 +50,6 @@ async function getFileList(state: types.IState, gameMode: string): Promise<strin
 async function validationErrorHandler(api: types.IExtensionApi,
                                       gameConfig: IREEngineConfig,
                                       err: any): Promise<void> {
-  const state = api.getState();
   if (err instanceof util.ProcessCanceled) {
     return Promise.resolve();
   }
@@ -63,74 +63,7 @@ async function validationErrorHandler(api: types.IExtensionApi,
     return Promise.resolve();
   }
 
-  let profiles: { [profileId: string]: types.IProfile } = util.getSafe(state, ['persistent', 'profiles'], {});
-  profiles = Object.keys(profiles).reduce((accum, iter) => {
-    if (profiles[iter].gameId === gameConfig.gameMode) {
-      accum[iter] = profiles[iter];
-    }
-    return accum;
-  }, {});
-
-  const mods = util.getSafe(state, ['persistent', 'mods', gameConfig.gameMode], {});
-  let downloads = util.getSafe(state, ['persistent', 'downloads', 'files'], {});
-  downloads = Object.keys(downloads)
-    .reduce((accum, iter) => {
-      const download: types.IDownload = downloads[iter];
-      if (!!download?.game && download.game.includes(gameConfig.gameMode)) {
-        accum[iter] = download;
-      }
-      return accum;
-    }, {});
-  const gameFileAttachments: IAttachmentData[] = (!!gameConfig.getErrorAttachments)
-    ? await gameConfig.getErrorAttachments(err)
-    : [];
-
-  const attachments: types.IAttachment[] = [
-    {
-      id: 'installedMods',
-      type: 'data',
-      data: {
-        persistent: {
-          mods: {
-            [gameConfig.gameMode]: mods,
-          },
-          downloads: {
-            files: downloads,
-          },
-          profiles,
-        },
-      },
-      description: 'Mods data',
-    },
-  ];
-
-  const stagingFolder = selectors.installPathForGame(state, gameConfig.gameMode);
-  const qbmsLog: IAttachmentData = {
-    filePath: path.join(util.getVortexPath('userData'), 'quickbms.log'),
-    description: 'QuickBMS log file',
-  };
-  const cacheFile: IAttachmentData = {
-    filePath: path.join(stagingFolder, CACHE_FILE),
-    description: 'Invalidation cache file',
-  };
-
-  const fileAttachments: IAttachmentData[] = gameFileAttachments.concat(qbmsLog, cacheFile);
-  for (const file of fileAttachments) {
-    try {
-      await fs.statAsync(file.filePath);
-      attachments.push({
-        id: path.basename(file.filePath),
-        type: 'file',
-        data: file.filePath,
-        description: file.description,
-      });
-    } catch (err) {
-      // nop
-    }
-  }
-
-  err['attachLogOnReport'] = true;
-  api.showErrorNotification('Validation operation failed', err, { attachments });
+  verifyFileIntegrity(api, gameConfig, true);
 }
 
 function testArchive(files, operationPath, archivePath, api, gameId): Promise<string[]> {
@@ -675,6 +608,37 @@ function addReEngineGame(context: types.IExtensionContext,
     });
 }
 
+function removeCache(api: types.IExtensionApi, gameMode: string) {
+  const state = api.getState();
+  const stagingFolder = selectors.installPathForGame(state, gameMode);
+  return fs.removeAsync(path.join(stagingFolder, CACHE_FILE))
+    .catch(err => err.code !== 'ENOENT'
+      ? api.showErrorNotification('Failed to reset cache', err)
+      : Promise.resolve());
+}
+
+function verifyFileIntegrity(api: types.IExtensionApi, reGame: IREEngineConfig, validationError?: boolean) {
+  const config = RE_ENGINE_GAMES[reGame.gameMode];
+  if (!isSteamKitAvaliable(api)) {
+    api.showErrorNotification('Steam File Downloader Extension is missing',
+      'Please ensure that the Steam File Downloader Extension is installed and enabled.', { allowReport: false });
+    return;
+  }
+  const cb = (err: Error) => {
+    if (err !== null) {
+      return;
+    }
+    removeCache(api, reGame.gameMode);
+  };
+  showVerifyIntegrityDialog(api, validationError)
+    .then((result) => {
+      if (result.action === 'Cancel') {
+        return Promise.resolve();
+      }
+      runFileVerification(api, config, cb);
+    });
+}
+
 function main(context: types.IExtensionContext) {
   const isReEngineGame = () => {
     const state = context.api.getState();
@@ -682,7 +646,10 @@ function main(context: types.IExtensionContext) {
     return (RE_ENGINE_GAMES[gameMode] !== undefined);
   };
 
+  context.requireExtension('Vortex Steam File Downloader');
+  //context.requireExtension('Steamkit');
   context.requireExtension('quickbms-support');
+
   context.registerInstaller('fluffyquackmanager', 5,
     fluffyManagerTest, () => fluffyDummyInstaller(context));
 
@@ -723,30 +690,15 @@ function main(context: types.IExtensionContext) {
       .catch(err => callback(err));
   }, { minArguments: 2 });
 
-  context.registerAction('mod-icons', 500, 'savegame', {}, 'Reset Invalidation Cache', () => {
+  context.registerAction('mod-icons', 500, 'steam', {}, 'Verify Archive Integrity', () => {
     const state = context.api.getState();
     const activeGameId = selectors.activeGameId(state);
-    const stagingFolder = selectors.installPathForGame(state, activeGameId);
-    const removeCache = () => fs.removeAsync(path.join(stagingFolder, CACHE_FILE))
-      .catch(err => err.code !== 'ENOENT'
-        ? context.api.showErrorNotification('Failed to reset cache', err)
-        : Promise.resolve());
-
-    const t = context.api.translate;
-    context.api.showDialog('question', 'Reset Invalidation Cache', {
-      bbcode: t('Please only use this functionality as a last resort - Vortex uses the '
-        + 'invalidation cache to keep track of deployed modified files and restore '
-        + 'vanilla files when purging your mods. Resetting the cache will cause Vortex '
-        + 'to lose track of deployed mods, potentially leaving your game in a broken state.[br][/br][br][/br]'
-        + 'Only use this button if you intend to verify file integrity through Steam.'),
-    }, [
-      { label: 'Close', default: true },
-      {
-        label: 'View Cache', action: () => util.opn(path.join(stagingFolder, CACHE_FILE))
-          .catch(err => null),
-      },
-      { label: 'Reset Cache', action: () => removeCache() },
-    ]);
+    const config: IREEngineConfig = RE_ENGINE_GAMES[activeGameId];
+    if (!config) {
+      context.api.showErrorNotification('Missing RE Engine configuration', { gameMode: activeGameId });
+      return;
+    }
+    verifyFileIntegrity(context.api, config);
   }, isReEngineGame);
 
   context.registerAction('mod-icons', 500, 'savegame', {}, 'Invalidate Paths', () => {
@@ -755,7 +707,7 @@ function main(context: types.IExtensionContext) {
     const gameMode = selectors.activeGameId(state);
     const profile = selectors.activeProfile(state);
     const gameConfig = RE_ENGINE_GAMES[gameMode];
-    if (gameConfig === undefined || gameMode !== profile.gameId) {
+    if (gameConfig === undefined || gameMode !== profile?.gameId) {
       // No RE Engine entry for this game.
       log('debug', '[RE-Wrapper] no game config for game', gameMode);
       return;
