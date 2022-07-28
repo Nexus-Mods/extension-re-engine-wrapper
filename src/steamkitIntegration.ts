@@ -20,8 +20,8 @@ export function showVerifyIntegrityDialog(api: types.IExtensionApi, validationEr
   const t = api.translate;
   const addendum = validationError
     ? 'A validation error has just occurred - this will block you from modding the game further until it is resolved.{{bl}}'
-    : '{{bl}}';
-  const showDialog = api.showDialog?.('question', 'Verify Archive Integrity', {
+    : '';
+  const showDialog = api.showDialog?.('question', 'Verify Integrity of Steam Game Files', {
     bbcode: t('Due to the modding pattern of RE Engine games, it\'s fairly common to '
           + 'experience game archive corruption or potential mismatch between what '
           + 'mods are installed, and what Vortex is expecting to be installed.{{bl}}'

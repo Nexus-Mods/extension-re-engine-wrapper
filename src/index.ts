@@ -690,7 +690,7 @@ function main(context: types.IExtensionContext) {
       .catch(err => callback(err));
   }, { minArguments: 2 });
 
-  context.registerAction('mod-icons', 500, 'steam', {}, 'Verify Archive Integrity', () => {
+  context.registerAction('mod-icons', 500, 'steam', {}, 'Verify Files', () => {
     const state = context.api.getState();
     const activeGameId = selectors.activeGameId(state);
     const config: IREEngineConfig = RE_ENGINE_GAMES[activeGameId];
@@ -726,8 +726,13 @@ function main(context: types.IExtensionContext) {
       profileChanging = false;
     });
 
-    context.api.onAsync('will-deploy', () => {
-      return revalidate(context.api);
+    context.api.events.on('re-engine-wrapper-run-file-verification', (gameMode: string) => {
+      const gameConfig = RE_ENGINE_GAMES[gameMode];
+      if (gameConfig === undefined) {
+        log('debug', '[RE-Wrapper] no game config for game', gameMode);
+        return;
+      }
+      verifyFileIntegrity(context.api, gameConfig);
     });
 
     context.api.events.on('remove-mod', (gameMode, modId) => {
@@ -736,6 +741,10 @@ function main(context: types.IExtensionContext) {
         return;
       }
       revalidate(context.api, gameConfig);
+    });
+
+    context.api.onAsync('will-deploy', () => {
+      return revalidate(context.api);
     });
 
     context.api.onAsync('did-deploy', () => {
