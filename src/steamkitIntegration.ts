@@ -19,20 +19,17 @@ export function isSteamKitAvaliable(api: types.IExtensionApi): boolean {
 export function showVerifyIntegrityDialog(api: types.IExtensionApi, validationError?: boolean): Promise<types.IDialogResult> {
   const t = api.translate;
   const addendum = validationError
-    ? 'A validation error has just occurred - this will block you from modding the game further until it is resolved.{{bl}}'
+    ? 'Vortex has detected an error with your game files, you will be unable to mod the game until this is resolved.{{bl}}'
     : '';
   const showDialog = api.showDialog?.('question', 'Verify Integrity of Steam Game Files', {
-    bbcode: t('Due to the modding pattern of RE Engine games, it\'s fairly common to '
-          + 'experience game archive corruption or potential mismatch between what '
-          + 'mods are installed, and what Vortex is expecting to be installed.{{bl}}'
-          + 'This issue is usually caused when using other modding tools such as "Fluffy Manager 5000" '
-          + 'alongside Vortex, or simply when the game updates and the modded archives are overwritten.{{bl}}'
-          + 'Vortex can fix any potential corruption and resolve any mod mismatches by restoring '
-          + 'the game files using the Steam File Downloader extension (which has been auto-installed for you){{bl}}'
-          + addendum
-          + 'Please note: most of the game\'s archives are generally over 20GB. Archive restoration process may take '
-          + 'a while depending on your internet connection. If you choose to restore any files, please DO NOT interrupt '
-          + 'the process!', {
+    bbcode: addendum + t(`${addendum}` + 'Due to the complexity of modding RE Engine games, it is possible '
+      + 'to experience game file corruption or mismatches.{{bl}}'
+      + 'This can be caused when other mod managers (such as "Fluffy Manager 5000") are used alongside '
+      + 'Vortex, or when the game updates and overwrites modded files.{{bl}}'
+      + 'Vortex can fix these issues by downloading and restoring the correct game files automatically '
+      + 'from Steam. Click "Verify Game Files" below to run this process.{{bl}}'
+      + 'Note: Most of the games files are over 20GB, meaning file restoration can take a while. If you choose to restore '
+      + 'any files, please DO NOT interrupt the process by closing Vortex.', {
             replace: {
               bl: '[br][/br][br][/br]',
             }
